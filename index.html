@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html >
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Demo</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-ui/lib/theme-chalk/index.css">
+    <style>
+        #app {
+            display: flex;
+            justify-content: flex-start;
+        }
+        #app .app-btn {width: 50px;}
+        .app-btn .el-button + .el-button { margin-left: 0; margin-top: 5px;}
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        <canvas id="c" width="450" height="332"></canvas>
+        <div class="app-btn">
+            <el-button size="mini" @click="changeEditMode('pen')">笔</el-button>
+            <el-button size="mini" @click="changeEditMode('arrow')">箭头</el-button>
+            <el-button size="mini" @click="changeEditMode('line')">实线</el-button>
+            <el-button size="mini" @click="changeEditMode('dottedline')">虚线</el-button>
+            <el-button size="mini" @click="changeEditMode('circle')">正圆</el-button>
+            <el-button size="mini" @click="changeEditMode('ellipse')">椭圆</el-button>
+            <el-button size="mini" @click="changeEditMode('text')">文字</el-button>
+            <el-button size="mini" @click="changeEditMode('remove')">擦除</el-button>
+            <el-button size="mini" @click="undo" :disabled="!config.undoStatus">撤销</el-button>
+            <el-button size="mini" @click="downImg">保存</el-button>
+        </div>
+    </div>
+    <!-- import Vue before Element -->
+    <script src="https://unpkg.com/vue@2.5.17/dist/vue.min.js"></script>
+    <!-- import JavaScript -->
+    <script src="https://unpkg.com/element-ui/lib/index.js"></script>
+    <script src="https://cdn.bootcss.com/fabric.js/2.1.0/fabric.min.js"></script>
+    <script>
+        //主要内容
+        var app = new Vue({
+            el: "#app",
+            data: {
+                chooseForm: {
+                    manSex: true,
+                    manPos: true,
+                    editMode: true
+                },
+                mouseFrom: {},
+                mouseTo: {},
+                canvas: null,
+                drawingObject: null, // 当前绘制对象
+                drawType: '',
+                textbox: null, // 文本编辑状态
+                color: "#E34F51", // 画笔颜色
+                drawWidth: 2, // 笔触宽度
+                moveCount: 1, // 绘制移动计数器
+                doDrawing: false, // 绘制状态
+                config: {
+                    canvasState             : [],
+                    currentStateIndex       : -1,
+                    undoStatus              : false,  // 撤销状态
+                    undoFinishedStatus      : 1
+                },
+                isFirst: true
+            },
+            methods: {
+                // 下载图片
+                downImg() {
+                    var type = 'png';
+                    // 返回一个包含JPG图片的<img>元素
+                    var img_png_src = this.canvas.toDataURL("image/png");  //将画板保存为图片格式的函数
+                    var imgData = img_png_src.replace(this._fixType(type),'image/octet-stream');
+                    
+                    var filename = '创伤部位_' + (new Date()).getTime() + '.' + type;
+                
+                    this.saveFile(imgData, filename);
+                },
+                // 保存文件
+                saveFile(data, filename){
+                    var save_link = document.createElementNS('http://www.w3.org/1999/xhtml', 'a');
+                    save_link.href = data;
+                    save_link.download = filename;
+                    var event = document.createEvent('MouseEvents');
+                    event.initMouseEvent('click', true, false, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+                    save_link.dispatchEvent(event);
+                },
+                _fixType(type) {
+                    type = type.toLowerCase().replace(/jpg/i, 'jpeg');
+                    var r = type.match(/png|jpeg|bmp|gif/)[0];
+                    return 'image/' + r;
+                },
+                initCanvas() {
+                    var self = this;
+                    //初始化画板
+                    this.canvas = new fabric.Canvas("c", {
+                        isDrawingMode: true,
+                        skipTargetFind: true,
+                        selectable: false,
+                        selection: false
+                    });
+                    // fabric.Image.fromURL('../../../../assets/images/b.jpg', oImg => {
+                    fabric.Image.fromURL('https://img.zcool.cn/community/01b2e7574e967132f875a4299bc590.jpg@2o.jpg', oImg => {
+                        this.canvas.add(oImg)
+                    },{
+                        crossOrigin: 'Anonymous'
+                    })
+                    window.zoom = window.zoom ? window.zoom : 1;
+
+                    this.canvas.freeDrawingBrush.color = this.color; //设置自由绘颜色
+                    this.canvas.freeDrawingBrush.width = this.drawWidth;
+
+                    //绑定画板事件
+                    this.canvas.on("mouse:down", options => {
+                        var xy = this.transformMouse(options.e.offsetX, options.e.offsetY);
+                        this.mouseFrom.x = xy.x;
+                        this.mouseFrom.y = xy.y;
+                        this.doDrawing = true;
+                    });
+                    this.canvas.on("mouse:up", options => {
+                        var xy = this.transformMouse(options.e.offsetX, options.e.offsetY);
+                        this.mouseTo.x = xy.x;
+                        this.mouseTo.y = xy.y;
+                        this.drawingObject = null;
+                        this.moveCount = 1;
+                        this.doDrawing = false;
+                        // 由于在箭头等非自由曲线描述时，属于连续触发
+                        this.updateCanvasState();
+                    });
+                    this.canvas.on("mouse:move", options => {
+                        if (this.moveCount % 2 && !this.doDrawing) {
+                            //减少绘制频率
+                            return;
+                        }
+                        this.moveCount++;
+                        var xy = this.transformMouse(options.e.offsetX, options.e.offsetY);
+                        this.mouseTo.x = xy.x;
+                        this.mouseTo.y = xy.y;
+                        this.drawimg();
+                    });
+
+                    this.canvas.on("selection:created", e => {
+                        if (e.target._objects) {
+                            //多选删除
+                            var etCount = e.target._objects.length;
+                            for (var etindex = 0; etindex < etCount; etindex++) {
+                                this.canvas.remove(e.target._objects[etindex]);
+                            }
+                        } else {
+                            //单选删除
+                            this.canvas.remove(e.target);
+                        }
+                        this.canvas.discardActiveObject(); //清除选中框
+                    });
+
+                    this.canvas.on('object:added', function() {
+                        // 由于初始化时，添加了默认背景图片，只需一次
+                        if (self.isFirst) {
+                            self.updateCanvasState()
+                            self.isFirst = false
+                        }
+                    });
+                },
+                //坐标转换
+                transformMouse(mouseX, mouseY) {
+                    return { x: mouseX / window.zoom, y: mouseY / window.zoom };
+                },
+                drawimg() {
+                    if (this.drawingObject) {
+                        this.canvas.remove(this.drawingObject);
+                    }
+                    var canvasObject = null;
+                    switch (this.drawType) {
+                        case "arrow": //箭头
+                            canvasObject = new fabric.Path(this.drawArrow(30, 30), {
+                                stroke: this.color,
+                                fill: "rgba(255,255,255,0)",
+                                strokeWidth: this.drawWidth
+                            });
+                            break;
+                        case "line": //直线
+                            canvasObject = new fabric.Line([this.mouseFrom.x, this.mouseFrom.y, this.mouseTo.x, this.mouseTo.y], {
+                                stroke: this.color,
+                                strokeWidth: this.drawWidth
+                            });
+                            break;
+                        case "dottedline": //虚线
+                            canvasObject = new fabric.Line([this.mouseFrom.x, this.mouseFrom.y, this.mouseTo.x, this.mouseTo.y], {
+                                strokeDashArray: [3, 1],
+                                stroke: this.color,
+                                strokeWidth: this.drawWidth
+                            });
+                            break;
+                        case "circle": //正圆
+                            var left = this.mouseFrom.x,
+                                top = this.mouseFrom.y;
+                            var radius = Math.sqrt((this.mouseTo.x - left) * (this.mouseTo.x - left) + (this.mouseTo.y - top) * (this.mouseTo.y - top)) / 2;
+                            canvasObject = new fabric.Circle({
+                                left: left,
+                                top: top,
+                                stroke: this.color,
+                                fill: "rgba(255, 255, 255, 0)",
+                                radius: radius,
+                                strokeWidth: this.drawWidth
+                            });
+                            break;
+                        case "ellipse": //椭圆
+                            var left = this.mouseFrom.x,
+                                top = this.mouseFrom.y;
+                            canvasObject = new fabric.Ellipse({
+                                left: left,
+                                top: top,
+                                stroke: this.color,
+                                fill: "rgba(255, 255, 255, 0)",
+                                originX: "center",
+                                originY: "center",
+                                rx: Math.abs(left - this.mouseTo.x),
+                                ry: Math.abs(top - this.mouseTo.y),
+                                strokeWidth: this.drawWidth
+                            });
+                            break;
+                        case "square": //TODO:正方形（后期完善）
+                            break;
+                        case "rectangle": //长方形
+                            var path = "M " + this.mouseFrom.x + " " + this.mouseFrom.y +
+                                " L " + this.mouseTo.x + " " + this.mouseFrom.y +
+                                " L " + this.mouseTo.x + " " + this.mouseTo.y +
+                                " L " + this.mouseFrom.x + " " + this.mouseTo.y +
+                                " L " + this.mouseFrom.x + " " + this.mouseFrom.y +
+                                " z";
+                            canvasObject = new fabric.Path(path, {
+                                left: left,
+                                top: top,
+                                stroke: this.color,
+                                strokeWidth: this.drawWidth,
+                                fill: "rgba(255, 255, 255, 0)"
+                            });
+                            //也可以使用fabric.Rect
+                            break;
+                        case "rightangle": //直角三角形
+                            var path = "M " + this.mouseFrom.x + " " + this.mouseFrom.y + " L " + this.mouseFrom.x + " " + this.mouseTo.y + " L " + this.mouseTo.x + " " + mouseTo.y + " z";
+                            canvasObject = new fabric.Path(path, {
+                                left: left,
+                                top: top,
+                                stroke: this.color,
+                                strokeWidth: this.drawWidth,
+                                fill: "rgba(255, 255, 255, 0)"
+                            });
+                            break;
+                        case "equilateral": //等边三角形
+                            var height = this.mouseTo.y - this.mouseFrom.y;
+                            canvasObject = new fabric.Triangle({
+                                top: this.mouseFrom.y,
+                                left: this.mouseFrom.x,
+                                width: Math.sqrt(Math.pow(height, 2) + Math.pow(height / 2.0, 2)),
+                                height: height,
+                                stroke: this.color,
+                                strokeWidth: this.drawWidth,
+                                fill: "rgba(255,255,255,0)"
+                            });
+                            break;
+                        case "isosceles":
+                            break;
+                        case "text":
+                            this.textbox = new fabric.Textbox("", {
+                                left: this.mouseFrom.x,
+                                top: this.mouseFrom.y - 10,
+                                width: 120,
+                                fontSize: 18,
+                                borderColor: "#2c2c2c",
+                                fill: this.color,
+                                hasControls: false
+                            });
+                            
+                            this.canvas.add(this.textbox);
+                            this.textbox.enterEditing();
+                            this.textbox.hiddenTextarea.focus();
+                            break;
+                        case "remove":
+                            break;
+                        default:
+                            break;
+                    }
+                    if (canvasObject) {
+                        this.canvas.add(canvasObject); //.setActiveObject(canvasObject)
+                        this.drawingObject = canvasObject;
+                        
+                    }
+                },
+                undo() {
+                    let self =this;
+                    if(this.config.undoFinishedStatus) {
+                        if (this.config.canvasState.length > 1) {
+                            if (this.config.currentStateIndex > 0) {
+                                this.canvas.loadFromJSON(this.config.canvasState[this.config.currentStateIndex - 1], function() {
+                                    self.canvas.renderAll();
+                                    self.config.currentStateIndex -= 1;
+                                    if (self.config.currentStateIndex <= 0) {
+                                        self.config.undoStatus = false;
+                                    }
+                                });
+                            }
+                        }
+                    }
+                },
+                updateCanvasState() {
+                    var jsonData = this.canvas.toJSON();
+                    var canvasAsJson = JSON.stringify(jsonData);
+                    
+                    if (this.config.currentStateIndex < this.config.canvasState.length - 1) {
+                        var indexToBeInserted = this.config.currentStateIndex + 1;
+                        this.config.canvasState[indexToBeInserted] = canvasAsJson;
+                        var numberOfElementsToRetain = indexToBeInserted + 1;
+                        this.config.canvasState = this.config.canvasState.splice(0,numberOfElementsToRetain);
+                    } else {
+                        this.config.canvasState.push(canvasAsJson);
+                    }
+                    
+                    this.config.currentStateIndex = this.config.canvasState.length - 1;
+                    if((this.config.currentStateIndex == this.config.canvasState.length - 1) && this.config.currentStateIndex > 0) {
+                        this.config.undoStatus = true;
+                    }
+                },
+                drawArrow(theta, headlen) {
+                    let fromX = this.mouseFrom.x,
+                        fromY = this.mouseFrom.y,
+                        toX = this.mouseTo.x,
+                        toY = this.mouseTo.y;
+                    theta = typeof theta != "undefined" ? theta : 30;
+                    headlen = typeof theta != "undefined" ? headlen : 10;
+                    // 计算各角度和对应的P2,P3坐标
+                    var angle = Math.atan2(fromY - toY, fromX - toX) * 180 / Math.PI,
+                        angle1 = (angle + theta) * Math.PI / 180,
+                        angle2 = (angle - theta) * Math.PI / 180,
+                        topX = headlen * Math.cos(angle1),
+                        topY = headlen * Math.sin(angle1),
+                        botX = headlen * Math.cos(angle2),
+                        botY = headlen * Math.sin(angle2);
+                    var arrowX = fromX - topX,
+                        arrowY = fromY - topY;
+                    var path = " M " + fromX + " " + fromY;
+                        path += " L " + toX + " " + toY;
+                        arrowX = toX + topX;
+                        arrowY = toY + topY;
+                        path += " M " + arrowX + " " + arrowY;
+                        path += " L " + toX + " " + toY;
+                        arrowX = toX + botX;
+                        arrowY = toY + botY;
+                        path += " L " + arrowX + " " + arrowY;
+                    return path;
+                },
+                changeEditMode(mode) {
+                    this.drawType = mode
+                    this.canvas.isDrawingMode = false;
+                    if (this.textbox) {
+                        //退出文本编辑状态
+                        this.textbox.exitEditing();
+                        this.textbox = null;
+                    }
+                    if (mode == "pen") {
+                        this.canvas.isDrawingMode = true;
+                    } else if (mode == "remove") {
+                        this.canvas.selection = true;
+                        this.canvas.skipTargetFind = false;
+                        this.canvas.selectable = true;
+                    } else {
+                        this.canvas.skipTargetFind = true; //画板元素不能被选中
+                        this.canvas.selection = false; //画板不显示选中
+                    }
+                }
+            },
+            mounted() {
+                this.initCanvas();
+            }
+        });
+    </script>
+</body>
+
+</html>
